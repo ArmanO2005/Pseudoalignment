@@ -2,6 +2,16 @@ mod k_mer_utils;
 mod file_parser_utils;
 use std::collections::{HashMap, HashSet};
 
+fn main() {
+    let fasta_path = "../test_data/GJJC01.fasta";
+    let fastq_path = "../test_data/SRR15662082_1.fastq";
+    let k = 30;
+    let mut de_bruijn_graph = DeBruijnGraph::new(k);
+    de_bruijn_graph.build_index_graph(fasta_path);
+    let alignments = de_bruijn_graph.align_fastq(fastq_path);
+    dbg!(alignments);
+}
+
 
 struct DeBruijnGraph {
     pub k: usize,
@@ -35,10 +45,6 @@ impl DeBruijnGraph {
                 self.edge_index.entry(key.clone()).or_default().insert(transcript_id.clone());
                 self.adj_list.entry(key.0.clone()).or_default().push(key.1.clone());
                 self.adj_list.entry(key.1.clone()).or_default();
-                
-
-                self.adj_list.get_mut(k_prefix).unwrap().push(k_suffix.to_string());
-
             }
         }
     }
@@ -57,16 +63,16 @@ impl DeBruijnGraph {
 
             read_edges.push(key.clone());
 
-            let Some(mer) = self.edge_index.get(&key) else {
+            let Some(transcript_list) = self.edge_index.get(&key) else {
                 continue;
             };
 
             match &mut cur {
                 None => {
-                    cur = Some(mer.iter().cloned().collect());
+                    cur = Some(transcript_list.iter().cloned().collect());
                 }
                 Some(cur_set) => {
-                    cur_set.retain(|t| mer.contains(t));
+                    cur_set.retain(|t| transcript_list.contains(t));
                     if cur_set.is_empty() {
                         break;
                     }
@@ -77,4 +83,52 @@ impl DeBruijnGraph {
         (cur.unwrap_or_default(), read_edges)
     }
 
+
+    fn walk_score(&self, read_edges: &[(String, String)], eligable_transcripts: &HashSet<String>) -> HashMap<String, f64> {
+        let mut transcript_scores = HashMap::new();
+        for transcript_id in eligable_transcripts {
+            let mut successes = Vec::new();
+            for i in 0..read_edges.len() - 1 {
+                let (_, suffix) = &read_edges[i];
+                let (_, next_suffix) = &read_edges[i + 1];
+
+                let key = (suffix.clone(), next_suffix.clone());
+
+                if let Some(neighbors) = self.adj_list.get(suffix) {
+                    if !neighbors.contains(next_suffix) {
+                        successes.push(false);
+                    } else if let Some(transcripts) = self.edge_index.get(&key) {
+                        successes.push(transcripts.contains(transcript_id));
+                    } else {
+                        successes.push(false);
+                    }
+                } else {
+                    successes.push(false);
+                }
+            }
+            let score = successes.iter().filter(|&&x| x).count() as f64 / successes.len().max(1) as f64;            
+            transcript_scores.insert(transcript_id.clone(), score);
+        }
+        transcript_scores
+    }
+
+
+    fn align_read(&self, read_sequence: &str) -> HashMap<String, f64> {
+        let (eligable_transcripts, read_edges) = self.pseudoalign(read_sequence);
+        self.walk_score(&read_edges, &eligable_transcripts)
+    }
+
+    pub fn align_fastq(&self, fastq_path: &str) -> Vec<HashMap<String, f64>> {
+        let fastq_records = file_parser_utils::read_fastq(fastq_path).expect("Failed to read fastq");
+        let mut results = Vec::new();
+        let mut i = 0;
+        for record in fastq_records {
+            if i < 1000 {
+                let alignment = self.align_read(&record.sequence);
+                results.push(alignment);
+            }
+            i += 1;
+        }
+        results
+    }
 }

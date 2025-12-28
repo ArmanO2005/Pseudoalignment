@@ -1,3 +1,4 @@
+use crate::file_parser_utils::Fasta;
 use std::collections::HashMap;
 
 
@@ -19,7 +20,7 @@ struct transcript_k_mer {
     pub k_mer: Vec<String>,
 }
 
-struct KMerIndex {
+pub struct KMerIndex {
     pub index: HashMap<String, Vec<String>>,
 }
 
