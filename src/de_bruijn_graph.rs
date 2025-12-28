@@ -30,12 +30,12 @@ impl DeBruijnGraph {
                 let k_mer = &k_mers[i];
                 let k_prefix = &k_mer[..self.k - 1];
                 let k_suffix = &k_mer[1..];
-                
-                self.adj_list.entry(k_prefix.to_string()).or_default();
-                self.adj_list.entry(k_suffix.to_string()).or_default();
 
-                self.edge_index.entry((k_prefix.to_string(), k_suffix.to_string())).or_default();
-                self.edge_index.get_mut(&(k_prefix.to_string(), k_suffix.to_string())).unwrap().insert(transcript_id.clone());
+                let key = (k_prefix.to_string(), k_suffix.to_string());
+                self.edge_index.entry(key.clone()).or_default().insert(transcript_id.clone());
+                self.adj_list.entry(key.0.clone()).or_default().push(key.1.clone());
+                self.adj_list.entry(key.1.clone()).or_default();
+                
 
                 self.adj_list.get_mut(k_prefix).unwrap().push(k_suffix.to_string());
 
@@ -53,9 +53,11 @@ impl DeBruijnGraph {
             let k_prefix = &k_mer[..self.k - 1];
             let k_suffix = &k_mer[1..];
 
-            read_edges.push((k_prefix.to_string(), k_suffix.to_string()));
+            let key = (k_prefix.to_string(), k_suffix.to_string());
 
-            let Some(mer) = self.edge_index.get(&(k_prefix.to_string(), k_suffix.to_string())) else {
+            read_edges.push(key.clone());
+
+            let Some(mer) = self.edge_index.get(&key) else {
                 continue;
             };
 
@@ -75,33 +77,4 @@ impl DeBruijnGraph {
         (cur.unwrap_or_default(), read_edges)
     }
 
-
-    fn traversal(&self, read_transcript_ids: &HashSet<String>, read_edges: &[(String, String)]) -> HashSet<String> {
-        let mut match_list = HashSet::new();
-
-        for transcript_id in read_transcript_ids {
-            let mut found = true;
-
-            for (k_prefix, k_suffix) in read_edges {
-                match self.edge_index.get(&(k_prefix.clone(), k_suffix.clone())) {
-                    Some(transcripts) => {
-                        if !transcripts.contains(transcript_id) {
-                            found = false;
-                            break;
-                        }
-                    }
-                    None => {
-                        found = false;
-                        break;
-                    }
-                }
-            }
-
-            if found {
-                match_list.insert(transcript_id.clone());
-            }
-        }
-
-        match_list
-    }
 }
