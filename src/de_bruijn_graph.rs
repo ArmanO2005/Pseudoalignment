@@ -6,21 +6,22 @@ use std::collections::{HashMap, HashSet};
 struct DeBruijnGraph {
     pub k: usize,
     pub adj_list: HashMap<String, Vec<String>>,
-    pub transcript_index: HashMap<String, HashSet<String>>,
+    pub edge_index: HashMap<(String, String), HashSet<String>>,
 }
 
 
 impl DeBruijnGraph {
-    fn new(k: usize) -> Self {
+    pub fn new(k: usize) -> Self {
+        assert!(k >= 2, "k must be >= 2");
         DeBruijnGraph {
             k,
             adj_list: HashMap::new(),
-            transcript_index: HashMap::new(),
+            edge_index: HashMap::new(),
         }
     }
 
 
-    fn build_index_graph(&mut self, fasta_path: &str) {
+    pub fn build_index_graph(&mut self, fasta_path: &str) {
         let fasta_records = file_parser_utils::read_fasta(fasta_path).expect("Failed to read fasta");
         let k_mer_index = k_mer_utils::build_k_mer_index(&fasta_records, self.k);
 
@@ -29,30 +30,78 @@ impl DeBruijnGraph {
                 let k_mer = &k_mers[i];
                 let k_prefix = &k_mer[..self.k - 1];
                 let k_suffix = &k_mer[1..];
+                
+                self.adj_list.entry(k_prefix.to_string()).or_default();
+                self.adj_list.entry(k_suffix.to_string()).or_default();
 
-                if !self.adj_list.contains_key(k_prefix) {
-                    self.adj_list.insert(k_prefix.to_string(), Vec::new());
-                }
+                self.edge_index.entry((k_prefix.to_string(), k_suffix.to_string())).or_default();
+                self.edge_index.get_mut(&(k_prefix.to_string(), k_suffix.to_string())).unwrap().insert(transcript_id.clone());
 
-                if !self.adj_list.contains_key(k_suffix) {
-                    self.adj_list.insert(k_suffix.to_string(), Vec::new());
-                }
-
-                if !self.transcript_index.contains_key(k_prefix) {
-                    self.transcript_index.insert(k_prefix.to_string(), HashSet::new());
-                }
-                self.transcript_index.get_mut(k_prefix).unwrap().insert(transcript_id.clone());
-
-
-                if !self.transcript_index.contains_key(k_suffix) {
-                    self.transcript_index.insert(k_suffix.to_string(), HashSet::new());
-                }
-                self.transcript_index.get_mut(k_suffix).unwrap().insert(transcript_id.clone());
-
-
-                self.adj_list.get_mut(k_prefix).unwrap().push(k_suffix.clone());
+                self.adj_list.get_mut(k_prefix).unwrap().push(k_suffix.to_string());
 
             }
         }
+    }
+
+
+    fn pseudoalign(&self, read_sequence: &str) -> (HashSet<String>, Vec<(String, String)>) {
+        let read_k_mers = k_mer_utils::create_k_mers(read_sequence, self.k);
+        let mut cur: Option<HashSet<String>> = None;
+        let mut read_edges = Vec::new();
+
+        for k_mer in read_k_mers {
+            let k_prefix = &k_mer[..self.k - 1];
+            let k_suffix = &k_mer[1..];
+
+            read_edges.push((k_prefix.to_string(), k_suffix.to_string()));
+
+            let Some(mer) = self.edge_index.get(&(k_prefix.to_string(), k_suffix.to_string())) else {
+                continue;
+            };
+
+            match &mut cur {
+                None => {
+                    cur = Some(mer.iter().cloned().collect());
+                }
+                Some(cur_set) => {
+                    cur_set.retain(|t| mer.contains(t));
+                    if cur_set.is_empty() {
+                        break;
+                    }
+                }
+            }
+        }
+
+        (cur.unwrap_or_default(), read_edges)
+    }
+
+
+    fn traversal(&self, read_transcript_ids: &HashSet<String>, read_edges: &[(String, String)]) -> HashSet<String> {
+        let mut match_list = HashSet::new();
+
+        for transcript_id in read_transcript_ids {
+            let mut found = true;
+
+            for (k_prefix, k_suffix) in read_edges {
+                match self.edge_index.get(&(k_prefix.clone(), k_suffix.clone())) {
+                    Some(transcripts) => {
+                        if !transcripts.contains(transcript_id) {
+                            found = false;
+                            break;
+                        }
+                    }
+                    None => {
+                        found = false;
+                        break;
+                    }
+                }
+            }
+
+            if found {
+                match_list.insert(transcript_id.clone());
+            }
+        }
+
+        match_list
     }
 }

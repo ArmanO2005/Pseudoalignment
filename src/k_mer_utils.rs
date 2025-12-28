@@ -14,12 +14,6 @@ pub fn create_k_mers(sequence: &str, k: usize) -> Vec<String> {
 }
 
 
-struct Fasta {
-    pub header: String,
-    pub sequence: String,
-}
-
-
 struct transcript_k_mer {
     pub transcript_id: String,
     pub k_mer: Vec<String>,
