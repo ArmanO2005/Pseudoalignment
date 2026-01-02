@@ -48,7 +48,6 @@ pub fn read_fasta(path: &str) -> io::Result<Vec<Fasta>> {
 }
 
 
-
 pub struct Fastq {
     pub header: String,
     pub sequence: String,

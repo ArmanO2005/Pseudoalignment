@@ -5,15 +5,18 @@ mod de_bruijn_graph;
 
 fn main() {
     let mut dbg = de_bruijn_graph::DeBruijnGraph::new(31);
-    dbg.load_data("../data/transcripts.fasta", "../data/reads.fastq");
+    dbg.load_data("../test_data/GJJC01.fasta", "../test_data/SRR15662082_1.fastq");
+
+    dbg!("data loaded");
+
     dbg.build_index_graph();
+
+    dbg!("index built");
     
     let abundances = dbg.run_pseudoalignment(1000, 1e-6);
     
-    for (transcript_id, abundance_map) in abundances {
-        println!("Transcript: {}", transcript_id);
-        for (method, abundance) in abundance_map {
-            println!("  {}: {:.6}", method, abundance);
-        }
+    for (read_id, read_abundance) in abundances {
+        dbg!(read_id);
+        dbg!(read_abundance);
     }
 }

@@ -4,7 +4,7 @@ use crate::k_mer_utils;
 use crate::file_parser_utils;
 use crate::EM_algorithm;
 
-struct DeBruijnGraph {
+pub struct DeBruijnGraph {
     pub k: usize,
     pub adj_list: HashMap<String, Vec<String>>,
     pub edge_index: HashMap<(String, String), HashSet<String>>,
@@ -31,6 +31,7 @@ impl DeBruijnGraph {
     pub fn load_data(&mut self, fasta_path: &str, fastq_path: &str) {
         self.transcripts = file_parser_utils::read_fasta(fasta_path).expect("Failed to read fasta");
         self.reads = file_parser_utils::read_fastq(fastq_path).expect("Failed to read fastq");
+        self.reads.truncate(10000);
     }
 
 
@@ -182,6 +183,9 @@ impl DeBruijnGraph {
         tolerance: f64
     ) -> HashMap<String, HashMap<String, f64>> {
         let mle = self.approx_MLE(max_iterations, tolerance);
+
+        dbg!("MLE computed");
+
         let abundances = self.get_abundances(mle);
         abundances
     }
