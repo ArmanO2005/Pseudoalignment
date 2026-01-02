@@ -1,29 +1,16 @@
-mod k_mer_utils;
-mod file_parser_utils;
-mod EM_algorithm;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, BTreeMap};
 use crate::file_parser_utils::{Fasta, Fastq};
-
-fn main() {
-    let fasta_records = file_parser_utils::read_fasta("../test_data/GJJC01.fasta").expect("Failed to read fasta");
-    let fastq_records = file_parser_utils::read_fastq("../test_data/SRR15662082_1.fastq").expect("Failed to read fastq");
-    let k = 7;
-    let mut de_bruijn_graph = DeBruijnGraph::new(k);
-    de_bruijn_graph.build_index_graph(&fasta_records);
-    let scores = de_bruijn_graph.get_MLEs(
-        fastq_records,
-        fasta_records,
-        100,
-        1e-6,
-    );
-    dbg!(scores);
-}
-
+use crate::k_mer_utils;
+use crate::file_parser_utils;
+use crate::EM_algorithm;
 
 struct DeBruijnGraph {
     pub k: usize,
     pub adj_list: HashMap<String, Vec<String>>,
     pub edge_index: HashMap<(String, String), HashSet<String>>,
+    pub eff_lengths: HashMap<String, usize>,
+    pub transcripts: Vec<Fasta>,
+    pub reads: Vec<Fastq>,
 }
 
 
@@ -34,12 +21,21 @@ impl DeBruijnGraph {
             k,
             adj_list: HashMap::new(),
             edge_index: HashMap::new(),
+            eff_lengths: HashMap::new(),
+            transcripts: Vec::new(),
+            reads: Vec::new(),
         }
     }
 
 
-    pub fn build_index_graph(&mut self, fasta_records: &Vec<Fasta>) {
-        let k_mer_index = k_mer_utils::build_k_mer_index(&fasta_records, self.k);
+    pub fn load_data(&mut self, fasta_path: &str, fastq_path: &str) {
+        self.transcripts = file_parser_utils::read_fasta(fasta_path).expect("Failed to read fasta");
+        self.reads = file_parser_utils::read_fastq(fastq_path).expect("Failed to read fastq");
+    }
+
+
+    pub fn build_index_graph(&mut self) {
+        let k_mer_index = k_mer_utils::build_k_mer_index(&self.transcripts, self.k);
 
         for (transcript_id, k_mers) in k_mer_index.index {
             for i in 0..k_mers.len() {
@@ -48,15 +44,20 @@ impl DeBruijnGraph {
                 let k_suffix = &k_mer[1..];
 
                 let key = (k_prefix.to_string(), k_suffix.to_string());
-                self.edge_index.entry(key.clone()).or_default().push(transcript_id.clone());
+                self.edge_index.entry(key.clone()).or_default().insert(transcript_id.clone());
                 self.adj_list.entry(key.0.clone()).or_default().push(key.1.clone());
                 self.adj_list.entry(key.1.clone()).or_default();
             }
         }
+
+        for fasta in &self.transcripts {
+            let eff_length = fasta.sequence.len().saturating_sub(self.k - 1);
+            self.eff_lengths.insert(fasta.header.clone(), eff_length);
+        }
     }
 
 
-    fn get_compatability(&self, read_sequence: &str) -> (HashSet<String>, Vec<(String, String)>) {
+    fn get_compatability(&self, read_sequence: &str) -> (Vec<String>, Vec<(String, String)>) {
         let read_k_mers = k_mer_utils::create_k_mers(read_sequence, self.k);
         let mut cur: Option<HashSet<String>> = None;
         let mut read_edges = Vec::new();
@@ -70,7 +71,7 @@ impl DeBruijnGraph {
             read_edges.push(key.clone());
 
             let Some(transcript_list) = self.edge_index.get(&key) else {
-                return (HashSet::new(), read_edges);
+                return (Vec::new(), read_edges);
             };
 
             match &mut cur {
@@ -86,99 +87,104 @@ impl DeBruijnGraph {
             }
         }
 
-        (cur.unwrap_or_default(), read_edges)
+        let result = cur.unwrap_or_default();
+        (result.into_iter().collect::<Vec<_>>(), read_edges)
     }
 
 
-    fn get_equivalence_classes(&self, fastq_records: Vec<Fastq>) -> (HashMap<HashSet<String>, usize>, HashMap<String, HashSet<String>>) {
-        let mut eq_classes: HashMap<HashSet<String>, usize> = HashMap::new();
-        let mut read_compatabilities: HashMap<String, HashSet<String>> = HashMap::new();
-
-        for record in fastq_records {
+    fn get_equivalence_classes(
+        &mut self, 
+    ) -> BTreeMap<Vec<String>, usize> {
+        let mut eq_classes: BTreeMap<Vec<String>, usize> = BTreeMap::new();
+        
+        let mut compat_data = Vec::new();
+        for record in self.reads.iter() {
             let (compatability_set, _) = self.get_compatability(&record.sequence);
-            *eq_classes.entry(compatability_set).or_default() += 1;
-            read_compatabilities.entry(record.clone()).or_default().push(compatability_set);
+            compat_data.push(compatability_set);
         }
-        (eq_classes, read_compatabilities)
+        
+        for (i, compatability_set) in compat_data.into_iter().enumerate() {
+            let mut sorted_set = compatability_set.clone();
+            sorted_set.sort();
+            *eq_classes.entry(sorted_set.clone()).or_insert(0) += 1;
+            self.reads[i].compatable_transcripts = compatability_set.into_iter().collect();
+        }
+        eq_classes
     }
 
 
     fn log_likelihood_fxn(&self, 
         alpha_param: HashMap<String, f64>, 
-        eq_classes: &HashMap<HashSet<String>, usize>, 
-        fasta_records: Vec<Fasta>,
-        eff_lengths: HashMap<String, f64>
+        eq_classes: &BTreeMap<Vec<String>, usize>, 
     ) -> f64 {
 
-        assert!(alpha_param.len() == fasta_records.len(), "Alpha parameter length must match number of transcripts");
+        assert!(alpha_param.len() == self.transcripts.len(), "Alpha parameter length must match number of transcripts");
         
         let mut log_likelihood = 0.0;
 
-        for e in eq_classes {
-            let mut base = 0.0;
-            for transcript_id in &e.0 {
-                let transcript_length = eff_lengths[transcript_id];
+        for (transcript_ids, count) in eq_classes {
+            let mut base: f64 = 0.0;
+            for transcript_id in transcript_ids {
+                let transcript_length = self.eff_lengths[transcript_id] as f64;
                 base += alpha_param[transcript_id] / transcript_length;
             }
-            log_likelihood += e.1 as f64 * base.ln();
+            log_likelihood += *count as f64 * base.ln();
         }
         log_likelihood
     }
 
 
-    fn get_abundances(&self, 
-        approx_MLE: HashMap<String, f64>, 
-        read_compatabilities: HashMap<String, HashSet<String>>
-    ) -> HashMap<String, HashMap<String, f64>> {
-        let mut abundances: HashMap<String, HashMap<String, f64>> = HashMap::new();
-        
-        for read in read_compatabilities.index {
-            let transcripts = read_compatabilities[read];
-            let mut read_abundances: HashMap<String, f64> = HashMap::new();
-
-            let denominator = transcripts.iter().map(|x| approx_MLE[x]).sum();
-
-            for transcript_id in transcripts {
-                let prob = approx_MLE[transcript_id] / denominator;
-
-                read_abundances.entry(transcript_id.clone()).or_default() = prob;
-            }
-
-            abundances.entry(read.clone()).or_default() = read_abundances;
-        } 
-
-        abundances
-    }
-
-
-    fn approx_MLE(&self, 
-        fastq_records: Vec<Fastq>, 
-        fasta_records: Vec<Fasta>,
+    fn approx_MLE(&mut self, 
         max_iterations: usize,
         tolerance: f64
     ) -> HashMap<String, f64> {
-        let eq_classes = self.get_equivalence_classes(fastq_records);
+        let eq_classes = self.get_equivalence_classes();
 
         let log_likelihood_fn = |alpha: HashMap<String, f64>, 
-                             eq_classes: &HashMap<HashSet<String>, usize>,
-                             fasta_records: &Vec<Fasta>,
-                             eff_lengths: &HashMap<String, f64>| {
-            self.log_likelihood_fxn(alpha, eq_classes, fasta_records.clone(), eff_lengths.clone())
+                             eq_classes: &BTreeMap<Vec<String>, usize>| {
+            self.log_likelihood_fxn(alpha, eq_classes)
         };
 
         EM_algorithm::expectation_maximization_algorithm(
             &log_likelihood_fn,
+            &self.transcripts,
             &eq_classes,
-            &fasta_records,
-            self.k,  // Pass k!
+            self.k,
             max_iterations,
             tolerance,
         )
     }
 
 
+    fn get_abundances(&self, approx_MLE: HashMap<String, f64>) -> HashMap<String, HashMap<String, f64>> {
 
+        let mut abundances: HashMap<String, HashMap<String, f64>> = HashMap::new();
+        
+        for read in self.reads.iter() {
+            let transcripts = read.compatable_transcripts.iter().collect::<Vec<_>>();
+            let mut read_abundances: HashMap<String, f64> = HashMap::new();
 
+            let denominator = transcripts.iter().map(|x| approx_MLE[*x]).sum::<f64>();
+
+            for transcript_id in transcripts {
+                let prob = approx_MLE[transcript_id] / denominator;
+                read_abundances.insert(transcript_id.clone(), prob);
+            }
+
+            abundances.insert(read.header.clone(), read_abundances);
+        } 
+
+        abundances
+    }
+
+    pub fn run_pseudoalignment(&mut self, 
+        max_iterations: usize,
+        tolerance: f64
+    ) -> HashMap<String, HashMap<String, f64>> {
+        let mle = self.approx_MLE(max_iterations, tolerance);
+        let abundances = self.get_abundances(mle);
+        abundances
+    }
 
 
     // fn walk_score(&self, 
@@ -213,23 +219,4 @@ impl DeBruijnGraph {
     //     transcript_scores
     // }
 
-
-    // fn align_read(&self, read_sequence: &str) -> HashMap<String, f64> {
-    //     let (eligable_transcripts, read_edges) = self.pseudoalign(read_sequence);
-    //     self.walk_score(&read_edges, &eligable_transcripts)
-    // }
-
-    // pub fn align_fastq(&self, fastq_path: &str) -> Vec<HashMap<String, f64>> {
-    //     let fastq_records = file_parser_utils::read_fastq(fastq_path).expect("Failed to read fastq");
-    //     let mut results = Vec::new();
-    //     let mut i = 0;
-    //     for record in fastq_records {
-    //         if i < 1000 {
-    //             let alignment = self.align_read(&record.sequence);
-    //             results.push(alignment);
-    //         }
-    //         i += 1;
-    //     }
-    //     results
-    // }
 }

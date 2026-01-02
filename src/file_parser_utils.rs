@@ -1,5 +1,6 @@
 use std::fs::File;
 use std::io::{self, BufReader, BufRead};
+use std::collections::HashSet;
 
 
 pub struct Fasta {
@@ -35,7 +36,12 @@ pub fn read_fasta(path: &str) -> io::Result<Vec<Fasta>> {
     }
 
     if !cur_header.is_empty() {
-        fasta_records.push(Fasta { header: std::mem::take(&mut cur_header), sequence: std::mem::take(&mut cur_sequence) });
+        fasta_records.push(
+            Fasta { 
+                header: std::mem::take(&mut cur_header), 
+                sequence: std::mem::take(&mut cur_sequence) 
+            }
+        );
     }
 
     Ok(fasta_records)
@@ -47,6 +53,7 @@ pub struct Fastq {
     pub header: String,
     pub sequence: String,
     pub quality: String,
+    pub compatable_transcripts: HashSet<String>,
 }
 
 
@@ -58,34 +65,53 @@ pub fn read_fastq(path: &str) -> io::Result<Vec<Fastq>> {
     let mut cur_header = String::new();
     let mut cur_sequence = String::new();
     let mut cur_quality = String::new();
-    let mut on_seq: bool = true;
+    let mut state: usize = 0;
 
     for line in reader.lines() {
         let unwrapped_line = line?;
         let unwrapped_line = unwrapped_line.trim();
 
-        if let Some(rest) = unwrapped_line.strip_prefix('@') {
-            if !cur_header.is_empty() {
-                fastq_records.push(Fastq {
-                    header: std::mem::take(&mut cur_header),
-                    sequence: std::mem::take(&mut cur_sequence),
-                    quality: std::mem::take(&mut cur_quality),
-                });
-            }
-            cur_header = rest.to_string();
-        } else if unwrapped_line.starts_with('+') {
-            on_seq = false;
-            continue;       
-        } else if on_seq{
-            cur_sequence.push_str(unwrapped_line)
-        } else {
-            cur_quality.push_str(unwrapped_line);
-            on_seq = true;
+        match state {
+            0 => {
+                if let Some(rest) = unwrapped_line.strip_prefix('@') {
+                    if !cur_header.is_empty() {
+                        fastq_records.push(Fastq {
+                            header: std::mem::take(&mut cur_header),
+                            sequence: std::mem::take(&mut cur_sequence),
+                            quality: std::mem::take(&mut cur_quality),
+                            compatable_transcripts: HashSet::new(),
+                        });
+                    }
+                    cur_header = rest.to_string();
+                    state = 1;
+                }
+            },
+            1 => {
+                cur_sequence.push_str(unwrapped_line);
+                state = 2;
+            },
+            2 => {
+                if unwrapped_line.starts_with('+') {
+                    state = 3;
+                }
+            },
+            3 => {
+                cur_quality.push_str(unwrapped_line);
+                state = 0;
+            },
+            _ => {}
         }
     }
 
     if !cur_header.is_empty() {
-        fastq_records.push(Fastq { header: std::mem::take(&mut cur_header), sequence: std::mem::take(&mut cur_sequence), quality: std::mem::take(&mut cur_quality) });
+        fastq_records.push(
+            Fastq { 
+                header: std::mem::take(&mut cur_header), 
+                sequence: std::mem::take(&mut cur_sequence), 
+                quality: std::mem::take(&mut cur_quality), 
+                compatable_transcripts: HashSet::new() 
+            }
+        );
     }
 
     Ok(fastq_records)

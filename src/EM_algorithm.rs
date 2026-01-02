@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, BTreeMap};
 use crate::file_parser_utils::Fasta;
 
 
@@ -6,12 +6,10 @@ use crate::file_parser_utils::Fasta;
 pub fn expectation_maximization_algorithm(
     log_likelihood_fxn: &dyn Fn(
         HashMap<String, f64>, 
-        &HashMap<HashSet<String>, usize>, 
-        &Vec<Fasta>,
-        &HashMap<String, f64>
+        &BTreeMap<Vec<String>, usize>
     ) -> f64,
-    eq_classes: &HashMap<HashSet<String>, usize>,
     fasta_records: &Vec<Fasta>,
+    eq_classes: &BTreeMap<Vec<String>, usize>,
     k: usize,
     max_iterations: usize,
     tolerance: f64,
@@ -59,11 +57,9 @@ pub fn expectation_maximization_algorithm(
             }
         }
         
-        let current_log_likelihood = log_liklihood_fxn(
+        let current_log_likelihood = log_likelihood_fxn(
             alpha.clone(), 
-            eq_classes, 
-            fasta_records,
-            &eff_lengths
+            eq_classes
         );
         
         let likelihood_change = (current_log_likelihood - prev_log_likelihood).abs();

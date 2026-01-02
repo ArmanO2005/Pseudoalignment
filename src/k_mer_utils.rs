@@ -15,7 +15,7 @@ pub fn create_k_mers(sequence: &str, k: usize) -> Vec<String> {
 }
 
 
-struct transcript_k_mer {
+struct TranscriptKMer {
     pub transcript_id: String,
     pub k_mer: Vec<String>,
 }
