@@ -8,3 +8,4 @@ name = "psuedoalignment"
 path = "src/main.rs"
 
 [dependencies]
+csv = "1.4.0"

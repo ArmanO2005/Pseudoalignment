@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, BTreeMap};
 use crate::file_parser_utils::{Fasta, Fastq};
 use crate::k_mer_utils;
 use crate::file_parser_utils;
-use crate::EM_algorithm;
+use crate::em_algorithm;
 
 pub struct DeBruijnGraph {
     pub k: usize,
@@ -31,7 +31,7 @@ impl DeBruijnGraph {
     pub fn load_data(&mut self, fasta_path: &str, fastq_path: &str) {
         self.transcripts = file_parser_utils::read_fasta(fasta_path).expect("Failed to read fasta");
         self.reads = file_parser_utils::read_fastq(fastq_path).expect("Failed to read fastq");
-        self.reads.truncate(10000);
+        // self.reads.truncate(30000);
     }
 
 
@@ -137,7 +137,7 @@ impl DeBruijnGraph {
 
     fn approx_MLE(&mut self, 
         max_iterations: usize,
-        tolerance: f64
+        negligable_error: f64
     ) -> HashMap<String, f64> {
         let eq_classes = self.get_equivalence_classes();
 
@@ -146,13 +146,13 @@ impl DeBruijnGraph {
             self.log_likelihood_fxn(alpha, eq_classes)
         };
 
-        EM_algorithm::expectation_maximization_algorithm(
+        em_algorithm::expectation_maximization_algorithm(
             &log_likelihood_fn,
             &self.transcripts,
             &eq_classes,
             self.k,
             max_iterations,
-            tolerance,
+            negligable_error,
         )
     }
 
@@ -178,16 +178,34 @@ impl DeBruijnGraph {
         abundances
     }
 
-    pub fn run_pseudoalignment(&mut self, 
-        max_iterations: usize,
+
+    fn prune_transcripts(&self, 
+        abundances: &HashMap<String, HashMap<String, f64>>,
         tolerance: f64
     ) -> HashMap<String, HashMap<String, f64>> {
-        let mle = self.approx_MLE(max_iterations, tolerance);
+        let mut pruned_abundances: HashMap<String, HashMap<String, f64>> = HashMap::new();
 
-        dbg!("MLE computed");
+        for (read_id, read_abundances) in abundances {
+            for (transcript_id, abundance) in read_abundances {
+                if *abundance >= tolerance {
+                    pruned_abundances.entry(read_id.clone()).or_default().insert(transcript_id.clone(), *abundance);
+                }
+            }
+        }
 
+        pruned_abundances
+    }
+
+    pub fn run_pseudoalignment(&mut self, 
+        max_iterations: usize,
+        negligable_error: f64,
+        tolerance: f64
+    ) -> HashMap<String, HashMap<String, f64>> {
+        let mle = self.approx_MLE(max_iterations, negligable_error);
         let abundances = self.get_abundances(mle);
-        abundances
+        let pruned_abundances = self.prune_transcripts(&abundances, tolerance);
+
+        pruned_abundances
     }
 
 
